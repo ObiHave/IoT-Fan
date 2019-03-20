@@ -1,0 +1,6 @@
+[package]
+name = "beaglebone_server"
+version = "0.1.0"
+authors = ["Cheney <sollenberger.15@wright.edu>"]
+
+[dependencies]
