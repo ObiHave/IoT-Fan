@@ -11,10 +11,10 @@ use std::time::Duration;
 
 pub struct Command {
     cmd_id: CommandID,
-    param_id: ParameterID,
+    param_id: ControlMode,
     param_value: u16,
 }
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 #[allow(non_camel_case_types)]
 pub enum CommandID {
     setControlMode = 0,
@@ -32,9 +32,9 @@ impl From<u16> for CommandID {
         }
     }
 }
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 #[allow(non_camel_case_types)]
-pub enum ParameterID {
+pub enum ControlMode {
     sleep = 0,
     tracking = 1,
     oscillate = 2,
@@ -42,15 +42,15 @@ pub enum ParameterID {
     night = 4,
     invalidParameter,
 }
-impl From<u16> for ParameterID {
-    fn from(param: u16) -> ParameterID {
+impl From<u16> for ControlMode {
+    fn from(param: u16) -> ControlMode {
         match param {
-            0 => ParameterID::sleep,
-            1 => ParameterID::tracking,
-            2 => ParameterID::oscillate,
-            3 => ParameterID::point,
-            4 => ParameterID::night,
-            _ => ParameterID::invalidParameter,
+            0 => ControlMode::sleep,
+            1 => ControlMode::tracking,
+            2 => ControlMode::oscillate,
+            3 => ControlMode::point,
+            4 => ControlMode::night,
+            _ => ControlMode::invalidParameter,
         }
     }
 }
@@ -64,14 +64,14 @@ named!(
         // Take comma.
         take!(1) >>
         // Take parameter ID.
-        ParameterID: map_res!(take_until!(","), from_slice) >>
+        ControlMode: map_res!(take_until!(","), from_slice) >>
         // Take the comma.
         take!(1) >>
         // Take the parameter value.
         param_val: map_res!(take_until!("."), from_slice) >>
         (Command {
             cmd_id: CommandID::from(cmd_id),
-            param_id: ParameterID::from(ParameterID),
+            param_id: ControlMode::from(ControlMode),
             param_value: param_val,
         })
     )
@@ -81,28 +81,28 @@ fn from_slice(input: &[u8]) -> Result<u16, Error> {
 }
 fn main() {
     println!("Initializing!");
-    let (tx,rx) = channel();
+    let (kill_init,rx) = channel();
     thread::spawn(move || {
         let mut message = rx.recv_timeout(Duration::from_millis(50));
         while message.is_err() {   
-                for i in 0..100 {
+                for i in 1..100 {
                     message = rx.recv_timeout(Duration::from_millis(1));
                     if message.is_ok() {
                         break;
                     }
                     set_duty_cycle(i).expect("Cannot set duty cycle.");
-                    thread::sleep(Duration::from_millis(249));
+                    thread::sleep(Duration::from_millis(49));
                 }
                 if message.is_ok(){
                     break;
                 }
-                for x in (0..100).rev() {
+                for x in (1..100).rev() {
                     message = rx.recv_timeout(Duration::from_millis(1));
                     if message.is_ok() {
                         break;
                     }
                     set_duty_cycle(x).expect("Cannot set duty cycle.");
-                    thread::sleep(Duration::from_millis(249));
+                    thread::sleep(Duration::from_millis(49));
                 }            
         }
     });
@@ -114,7 +114,7 @@ fn main() {
         let mut buffer = [0; 100];
         let (bytes, _addr) = socket.recv_from(&mut buffer).expect("Failed to recieve message.");
         if first {
-            tx.send(1);
+            kill_init.send(1).expect("Unable to kill intialization.");
             first = false;
         }
         let received = &mut buffer[..bytes];
@@ -126,23 +126,23 @@ fn main() {
             CommandID::setControlMode => {
                 print!("Set Control Mode:");
                 match command.param_id {
-                    ParameterID::sleep => {
+                    ControlMode::sleep => {
                         println!(" Sleep.");
                     },
-                    ParameterID::tracking => {
+                    ControlMode::tracking => {
                         println!(" Tracking.");
                     },
-                    ParameterID::oscillate => {
+                    ControlMode::oscillate => {
                         println!(" Oscillate {:?} degrees.", command.param_value);                        
                     },
-                    ParameterID::point => {
+                    ControlMode::point => {
                         println!(" Point to {:?} degrees.", command.param_value);
                     },
-                    ParameterID::night => {
+                    ControlMode::night => {
                         println!(" Night time: {:?} minute timer.", command.param_value);
                     },
-                    ParameterID::invalidParameter => {
-                        println!(" Invalid mode setting: {:?}", command.param_value);
+                    ControlMode::invalidParameter => {
+                        println!(" Invalid mode setting: {:?}", command.param_id);
                     },
                 };
             },
