@@ -7,7 +7,7 @@ extern crate failure;
 use failure::Error;
 use std::thread;
 use std::sync::mpsc::channel;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 pub struct Command {
     cmd_id: CommandID,
@@ -128,6 +128,7 @@ fn main() {
                 match command.param_id {
                     ControlMode::sleep => {
                         println!(" Sleep.");
+                        set_duty_cycle(0);
                     },
                     ControlMode::tracking => {
                         println!(" Tracking.");
@@ -140,6 +141,12 @@ fn main() {
                     },
                     ControlMode::night => {
                         println!(" Night time: {:?} minute timer.", command.param_value);
+                        let timer_begin = Instant::now();
+                        thread::spawn(move || {
+                            if timer_begin.elapsed().as_secs() / 60 >= command.param_value {
+                                set_duty_cycle(0);
+                            }
+                        });
                     },
                     ControlMode::invalidParameter => {
                         println!(" Invalid mode setting: {:?}", command.param_id);
