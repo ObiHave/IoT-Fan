@@ -19,13 +19,13 @@ fn main() {
         //let read = LittleEndian::read_i16(cmd.stdout.as_slice());
         if cmd.stderr.len() == 0 {
             let (_, parsed) = trash(&cmd.stdout).expect("Could not parse the Temperature Readout.");
-            print!("Decimal: {}\nHex: {}", parsed, String::from_utf8(cmd.stdout).expect("Cannot"));
+            //print!("Decimal: {}\nHex: {}", parsed, String::from_utf8(cmd.stdout).expect("Cannot"));
             let chopped = parsed & 0x0FFF;
             println!("Degrees C: {} | Degrees F: {}", chopped as f64 / 16.0, (chopped as f64 / 16.0) * 9.0 / 5.0 + 32.0);
         } else {
             println!("{}", String::from_utf8(cmd.stderr).expect("Nah."));
         }
-        thread::sleep(Duration::from_secs(5));
+        thread::sleep(Duration::from_millis(200));
     }
 }
 /// Converts a slice of 2 `u8`s into a `u16`.

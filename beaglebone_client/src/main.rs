@@ -113,6 +113,7 @@ fn main() {
     loop {
         let mut buffer = [0; 100];
         let (bytes, _addr) = socket.recv_from(&mut buffer).expect("Failed to recieve message.");
+        println!("Recieved: {}", bytes);
         if first {
             kill_init.send(1).expect("Unable to kill intialization.");
             first = false;
@@ -143,7 +144,7 @@ fn main() {
                         println!(" Night time: {:?} minute timer.", command.param_value);
                         let timer_begin = Instant::now();
                         thread::spawn(move || {
-                            if timer_begin.elapsed().as_secs() / 60 >= command.param_value {
+                            if timer_begin.elapsed().as_secs() / 60 >= command.param_value.into() {
                                 set_duty_cycle(0);
                             }
                         });
@@ -185,8 +186,7 @@ fn set_duty_cycle(percentage: u32) -> Result<u32, Error> {
     let duty = percentage * 10000;        
     let duty_path = "/sys/class/pwm/pwmchip4/pwm-4:0/duty_cycle";
     let mut file = File::create(duty_path)?;
-    let output_duty = 1000000 - duty;
-    write!(file, "{}", output_duty)?;
+    write!(file, "{}", duty)?;
     Ok(percentage)
 }
 
