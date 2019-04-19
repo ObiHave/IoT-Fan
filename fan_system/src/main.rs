@@ -6,101 +6,31 @@ use nom::*;
 extern crate failure;
 use failure::Error;
 use std::thread;
-use std::sync::mpsc::channel;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 mod stepper;
 mod temperature;
+mod command;
+use command::{CommandID, ControlMode, parse_message};
 use std::process::Command;
 
-pub struct Command_msg {
-    cmd_id: CommandID,
-    param_id: ControlMode,
-    param_value: u16,
-}
-#[derive(Debug, PartialEq)]
-#[allow(non_camel_case_types)]
-pub enum CommandID {
-    setControlMode = 0,
-    percentSpeedMode = 1,
-    temperatureSpeedMode = 2,
-    invalidCommand,
-}
-impl From<u16> for CommandID {
-    fn from(cmdid: u16) -> CommandID {
-        match cmdid {
-            0 => CommandID::setControlMode,
-            1 => CommandID::percentSpeedMode,
-            2 => CommandID::temperatureSpeedMode,
-            _ => CommandID::invalidCommand,
-        }
-    }
-}
-#[derive(Debug, PartialEq)]
-#[allow(non_camel_case_types)]
-pub enum ControlMode {
-    sleep = 0,
-    tracking = 1,
-    oscillate = 2,
-    point = 3,
-    night = 4,
-    invalidParameter,
-}
-impl From<u16> for ControlMode {
-    fn from(param: u16) -> ControlMode {
-        match param {
-            0 => ControlMode::sleep,
-            1 => ControlMode::tracking,
-            2 => ControlMode::oscillate,
-            3 => ControlMode::point,
-            4 => ControlMode::night,
-            _ => ControlMode::invalidParameter,
-        }
-    }
-}
-
-
-named!(
-    parse_message(&[u8]) -> Command_msg,
-    do_parse!(
-        // Take command ID
-        cmd_id: map_res!(take_until!(","), from_slice) >>
-        // Take comma.
-        take!(1) >>
-        // Take parameter ID.
-        ControlMode: map_res!(take_until!(","), from_slice) >>
-        // Take the comma.
-        take!(1) >>
-        // Take the parameter value.
-        param_val: map_res!(take_until!("."), from_slice) >>
-        (Command_msg {
-            cmd_id: CommandID::from(cmd_id),
-            param_id: ControlMode::from(ControlMode),
-            param_value: param_val,
-        })
-    )
-);
-fn from_slice(input: &[u8]) -> Result<u16, Error> {
-    u16::from_str_radix(std::str::from_utf8(input)?, 10).map_err(|_| FanError::ParseError.into())
-}
-fn from_slice_temperature(input: &[u8]) -> Result<u16, Error> {
-    u16::from_str_radix(std::str::from_utf8(input)?, 16).map_err(|_| FanError::ParseError.into())
-}
 fn main() {
-    
-    println!("Initializing!");
     // Bind a UDP socket to listen for command messages from the Mobile App.
     let socket = UdpSocket::bind("192.168.8.1:8080").expect("Could not connect to UDP socket.");
     println!("Listening on {}", socket.local_addr().unwrap());
     // Begin oscillation thread, no-op to begin.
-    let osc_mutex = Arc::new(Mutex::new(stepper::oscillation::default()));
-
-    let default_tmp: f64 = 0.0;
-    let temp_mutex = Arc::new(Mutex::new(default_tmp));
-    let temp_main_mutex = temp_mutex.clone();
-    // Begin taking temperature measurements.
+    let osc_mutex = Arc::new(Mutex::new(stepper::Oscillation::default()));
+    let osc_main_mutex = osc_mutex.clone();
+    // Begin the oscillation thread.
     thread::spawn(move || {
-        temperature::temp_thread(temp_mutex.clone());
+        stepper::oscillation_thread(osc_mutex);
+    });
+
+    let temp_mutex = Arc::new(Mutex::new(temperature::Temperature::default()));
+    let temp_main_mutex = temp_mutex.clone();
+    // Begin temperature measurement thread.
+    thread::spawn(move || {
+        temperature::maintain_temp(temp_mutex);
     });
     loop {
         let mut buffer = [0; 100];
@@ -111,24 +41,36 @@ fn main() {
             Ok(parsed) => parsed,
             Err(_) => continue,
         };
+        //If the new message is not a command to oscillate, disable oscillation.
+        if command.cmd_id != CommandID::setControlMode && command.param_id != ControlMode::oscillate {
+            let mut osc = osc_main_mutex.lock().expect("The oscillation mutex was poisoned!");
+            osc.oscillation_enable = false;
+        }
+        if command.cmd_id != CommandID::temperatureSpeedMode {
+            let mut tmp = temp_main_mutex.lock().expect("The temperature mutex was poisoned!");
+            tmp.enable = false;
+        }
         match command.cmd_id {
             CommandID::setControlMode => {
                 print!("Set Control Mode:");
                 match command.param_id {
                     ControlMode::sleep => {
                         println!(" Sleep.");
-                        set_duty_cycle(0);
+                        set_duty_cycle(0).expect("Cannot sleep the fan.");
                     },
                     ControlMode::tracking => {
                         println!(" Tracking.");
                     },
                     ControlMode::oscillate => {
-                        println!(" Oscillate {:?} degrees.", command.param_value);                        
+                        println!(" Oscillate {:?} degrees.", command.param_value);
+                        let mut osc = osc_main_mutex.lock().expect("The oscillation mutex was poisoned!");
+                        osc.range = Some(command.param_value);
+                        osc.oscillation_enable = true;
                     },
                     ControlMode::point => {
                         println!(" Point to {:?} degrees.", command.param_value);
-                        if command.param_value < 360 && command.param_value > 0 {
-                            let mut osc = osc_mutex.lock().expect("The oscillation mutex was poisoned!");
+                        if command.param_value <= 360 {
+                            let mut osc = osc_main_mutex.lock().expect("The oscillation mutex was poisoned!");
                             osc.point(command.param_value.into());
                         } else {
                             println!("Invalid Point parameter {}, please enter one within 0 - 360 Degrees", command.param_value);
@@ -138,9 +80,13 @@ fn main() {
                         println!(" Night time: {:?} minute timer.", command.param_value);
                         let timer_begin = Instant::now();
                         thread::spawn(move || {
-                            if timer_begin.elapsed().as_secs() / 60 >= command.param_value.into() {
-                                set_duty_cycle(0);
-                            }
+                            loop {
+                                if timer_begin.elapsed().as_secs() / 60 >= command.param_value.into() {
+                                    set_duty_cycle(0).expect("Cannot set the fan speed!");
+                                    break;
+                                }
+                                thread::sleep(Duration::from_secs(5));
+                            }           
                         });
                     },
                     ControlMode::invalidParameter => {
@@ -160,22 +106,15 @@ fn main() {
             },
             CommandID::temperatureSpeedMode => {
                 println!("Temperature Mode: Desired Temp: {:?} Degrees F.", command.param_value);
-                println!("Current temp {} Degrees F", temp_main_mutex.lock().expect("Temp mutex was poisoned!"));
+                let mut tmp = temp_main_mutex.lock().expect("The temperature mutex was poisoned!");
+                tmp.enable = true;
+                tmp.desired = command.param_value;
             },
             CommandID::invalidCommand => {
                 println!("Invalid command ID: {:?}", command.cmd_id);
             }
-        }
-        //println!("{} Bytes received from {}.\nMessage Received: {}", bytes, addr, msg);
-        //let mut duty = String::new();
-        //println!("Enter new Duty Cycle (%):");
-        //io::stdin().read_line(&mut duty);
-        
-    }
-    //let chip = PwmChip::new(4).expect("Couldnt get the chip.");
-    //let pin = Pwm::new(4, 0).expect("Could not open the pin.");
-    //println!("{}", pin.get_duty_cycle_ns().expect("cannot get duty cycle."));
-    
+        }        
+    }    
 }
 
 fn set_duty_cycle(percentage: u32) -> Result<u32, Error> {
@@ -189,6 +128,9 @@ fn set_duty_cycle(percentage: u32) -> Result<u32, Error> {
 #[derive(Fail, Debug, PartialEq)]
 pub enum FanError {
     /// An error was thrown by the serial communication driver.
-    #[fail(display = "The fan had an error.")]
+    #[fail(display = "Could not parse the command sent.")]
     ParseError,
+    /// An error was thrown by the temperature sensor driver.
+    #[fail(display = "Could not read the Temperature Sensor.")]
+    TemperatureError,
 }
