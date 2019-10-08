@@ -1,0 +1,1 @@
+/home/cheney/Desktop/IoT-Fan/fan_system/target/armv7-unknown-linux-gnueabihf/debug/fan_system: /home/cheney/Desktop/IoT-Fan/fan_system/src/main.rs /home/cheney/Desktop/IoT-Fan/fan_system/src/stepper.rs /home/cheney/Desktop/IoT-Fan/fan_system/src/temperature.rs
